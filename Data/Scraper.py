@@ -6,11 +6,31 @@ import pandas as pd
 import requests 
 import time
 
-load_dotenv()
-email = os.getenv('EMAIL')
-header = {'User-Agent': f'Market Scraper v1.0 ({email})'}
+def parse_numeric(value):
+    if not isinstance(value, str):
+        return np.nan
 
-def stock_scrape(max_page_count) -> pd.DataFrame:
+    value = value.replace(",", "").strip()
+    if value in ("N/A", "-", ""):
+        return np.nan
+
+    multiplier = 1
+    if value[-1] in ["K", "M", "B", "T"]:
+        suffix = value[-1]
+        value = value[:-1]
+        multiplier = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}[suffix]
+
+    try:
+        return float(value) * multiplier
+    except ValueError:
+        return np.nan
+    
+def safe_find_text(row, tag, **kwargs):
+    cell = row.find(tag, **kwargs)
+    return cell.text.strip() if cell else np.nan
+
+
+def stock_scrape(header, max_page_count) -> pd.DataFrame:
     yahoo_base = "https://finance.yahoo.com/research-hub/screener/equity/?"
     stock_df = pd.DataFrame()
 
@@ -40,24 +60,25 @@ def stock_scrape(max_page_count) -> pd.DataFrame:
         industry = []
         index_fund = []
 
-        for i in range(100):
-            row = data.find('tr', attrs = {"data-testid-row": str(i)})
-            ticker.append(row.find('span', class_='symbol yf-90gdtp').text.strip())
-            name.append(row.find('div', class_="tw-text-left tw-max-w-32 yf-362rys").text.strip())
-            price.append(row.find('fin-streamer').text.strip())
-            change.append(row.find('fin-streamer', attrs={"data-field": "regularMarketChange"}).text.strip())
-            percent_change.append(row.find('fin-streamer', attrs={"data-field": "regularMarketChangePercent"}).text.strip())
-            volume.append(row.find('td', attrs={"data-testid-cell": "dayvolume"}).text.strip())
-            average_volumne.append(row.find('td', attrs={"data-testid-cell": "avgdailyvol3m"}).text.strip())
-            market_cap.append(row.find('td', attrs={"data-testid-cell": "intradaymarketcap"}).text.strip())
-            P_E.append(row.find('td', attrs={"data-testid-cell": "peratio.lasttwelvemonths"}).text.strip())
-            region.append(row.find('td', attrs={"data-testid-cell": "region"}).text.strip())
-            section.append(row.find('td', attrs={"data-testid-cell": "sector"}).text.strip())
-            industry.append(row.find('td', attrs={"data-testid-cell": "industry"}).text.strip())
-            try:
-                index_fund.append(row.find('span', class_="list yf-16u5z4n").text.strip())
-            except AttributeError:
-                index_fund.append(np.nan)
+        for j in range(100):
+            row = data.find('tr', attrs={"data-testid-row": str(j)})
+            if not row:
+                continue
+
+            ticker.append(safe_find_text(row, 'span', class_='symbol yf-90gdtp'))
+            name.append(safe_find_text(row, 'div', class_='tw-text-left tw-max-w-32 yf-362rys'))
+            price.append(safe_find_text(row, 'fin-streamer'))
+            change.append(safe_find_text(row, 'fin-streamer', attrs={"data-field": "regularMarketChange"}))
+            percent_change.append(safe_find_text(row, 'fin-streamer', attrs={"data-field": "regularMarketChangePercent"}))
+            volume.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "dayvolume"}))
+            average_volumne.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "avgdailyvol3m"}))
+            market_cap.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "intradaymarketcap"}))
+            P_E.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "peratio.lasttwelvemonths"}))
+            region.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "region"}))
+            section.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "sector"}))
+            industry.append(safe_find_text(row, 'td', attrs={"data-testid-cell": "industry"}))
+            index_fund.append(safe_find_text(row, 'span', class_="list yf-16u5z4n"))
+
 
         holding = pd.DataFrame(data={"Ticker": ticker, 'Company Name': name, 'Intraday Price': price, 'Change': change,
                             'Percent Change': percent_change, 'Volume': volume, 'Avg Volume': average_volumne,
@@ -69,10 +90,29 @@ def stock_scrape(max_page_count) -> pd.DataFrame:
             print("Organization successful. Waiting...")
             time.sleep(5)
         else:
-            print("Stock scrape completed.")
+            print("Scrape sucessfull. Perfoming final organization...")
+
+    stock_df['Intraday Price'] = pd.to_numeric(stock_df['Intraday Price'].str.replace(',', ""), downcast='float')
+
+    change_mask = stock_df['Change'].str[0] == '-'
+    stock_df['Change'] = pd.to_numeric(stock_df['Change'].str.replace("+","").str.replace(",", "").str.replace('-',""), 
+                                    downcast='float')
+    stock_df.loc[change_mask, 'Change'] *= -1
+
+    change_mask = stock_df['Percent Change'].str[0] == '-'
+    stock_df['Percent Change'] = pd.to_numeric(stock_df['Percent Change'].str.replace("+","").str.replace(",", "").str.replace('-',"").str.replace("%", ""), 
+                                    downcast='float')
+    stock_df.loc[change_mask, 'Percent Change'] *= -1
+
+    stock_df['Volume'] = stock_df['Volume'].apply(parse_numeric)
+    stock_df['Avg Volume'] = stock_df['Avg Volume'].apply(parse_numeric)
+    stock_df['Market Cap'] = stock_df['Market Cap'].apply(parse_numeric)
+    stock_df['P/E Ratio'] = pd.to_numeric(
+    stock_df['P/E Ratio'].astype(str).str.replace('%', '', regex=False), errors='coerce', downcast='float')
+    print("Stock information ready for analysis!")
     return stock_df
 
-def crypto_scrape() -> pd.DataFrame:
+def crypto_scrape(header) -> pd.DataFrame:
     google_url = 'https://www.google.com/finance/markets/cryptocurrencies'
     google_request = requests.get(google_url, headers=header)
     if google_request.ok:
@@ -110,7 +150,11 @@ def crypto_scrape() -> pd.DataFrame:
         Percent_Change.append(percent_change)
 
     crypto_df = pd.DataFrame(data = {"Token": Token, "Name": Name, "Cost": Cost, "Change": Change, "Percent Change": Percent_Change})
-    print("Crypto scrape complete.")
+    print("Crypto scrape complete. Performing final organization...")
+
+    crypto_df['Name'] = crypto_df['Name'].str.split('(').str[0].str.split('/').str[0]
+    crypto_df['Cost'] = crypto_df['Cost'].str.replace(',', '').astype(float)
+    print("Crypto information ready for Analysis!")
     return crypto_df
 
 def currency_scrape() -> pd.DataFrame:
@@ -130,16 +174,15 @@ def currency_scrape() -> pd.DataFrame:
         holding = pd.DataFrame([data])
         currency_df = pd.concat([currency_df, holding], ignore_index=True)
 
-    print(f"Currency scrape successful.")
+    print("Currency scrape successful. Performing final organization...")
+
+    currency_df['Date'] = pd.to_datetime(currency_df['Date'], format='%Y-%m-%d')
+    print("Currency Information ready for review!")
     return currency_df
 
-def securities_scrape(date) -> pd.DataFrame:
-    FRED_API_KEY = os.getenv("FRED_API_KEY")
-    if not FRED_API_KEY:
-        raise RuntimeError("Set FRED_API_KEY in enviorment or .env file")
-
+def securities_scrape(api_key, date) -> pd.DataFrame:
     url = 'https://api.stlouisfed.org/fred/category/series'
-    params = {"category_id": 115, "api_key": FRED_API_KEY, "file_type": "json"}
+    params = {"category_id": 115, "api_key": api_key, "file_type": "json"}
 
     securities_request = requests.get(url, params=params)
 
@@ -157,11 +200,11 @@ def securities_scrape(date) -> pd.DataFrame:
 
     for i in range(len(series_list)):
         if date == None:
-            params_data = {"series_id": series_list[i], "api_key": FRED_API_KEY, "file_type": "json"}
+            params_data = {"series_id": series_list[i], "api_key": api_key, "file_type": "json"}
         else:
-            params_data = {"series_id": series_list[i], "api_key": FRED_API_KEY, "file_type": "json", "realtime_start": date}
+            params_data = {"series_id": series_list[i], "api_key": api_key, "file_type": "json", "realtime_start": date}
             
-        params_name = {"series_id": series_list[i], "api_key": FRED_API_KEY, "file_type": "json"}
+        params_name = {"series_id": series_list[i], "api_key": api_key, "file_type": "json"}
         data_request = requests.get(bond_url, params=params_data)
         name_request = requests.get(name_url, params=params_name)
         if data_request.ok and name_request.ok:
@@ -179,18 +222,22 @@ def securities_scrape(date) -> pd.DataFrame:
         else:
             raise ValueError(f"Unknown error occured at series with id {series_list[i]}.\nName request status code:{name_request.status_code}\nData request status code: {data_request.status_code}")
         
-    bond_df = pd.DataFrame()
+    securities_df = pd.DataFrame()
 
     for i in range(len(series_list)):
         Date = []
         Name = []
         Value = []
+        series_title = []
         for j in range(len(data_list[i]["observations"])):
             Date.append(data_list[i]["observations"][j]["date"])
             Value.append(data_list[i]["observations"][j]["value"])
             Name.append(series_list[i])
-        holding = pd.DataFrame(data={"Name": Name, "Date": Date, "Value": Value})
-        bond_df = pd.concat([bond_df, holding])
+            series_title.append(name_list[i]['seriess'][0]['title'])
+        holding = pd.DataFrame(data={"Series ID": Name, "Series Title": series_title, "Date": Date, "Value": Value})
+        securities_df = pd.concat([securities_df, holding])
 
-    print("Securities scrape successful.")
-    return bond_df
+    print("Securities scrape successful. Performing Final organization...")
+    securities_df['Value'] = pd.to_numeric(securities_df['Value'], errors='coerce')
+    print("Security information ready for analysis!")
+    return securities_df
