@@ -95,5 +95,5 @@ session.add_all(security_update)
 print("Security upload successful. Comitting changes...")
 
 session.commit()
-
+session.close()
 print("Database creation successful!")

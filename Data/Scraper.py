@@ -199,10 +199,7 @@ def securities_scrape(api_key, date) -> pd.DataFrame:
     name_url = 'https://api.stlouisfed.org/fred/series'
 
     for i in range(len(series_list)):
-        if date == None:
-            params_data = {"series_id": series_list[i], "api_key": api_key, "file_type": "json"}
-        else:
-            params_data = {"series_id": series_list[i], "api_key": api_key, "file_type": "json", "realtime_start": date}
+        params_data = {"series_id": series_list[i], "api_key": api_key, "file_type": "json", "observation_start": date}
             
         params_name = {"series_id": series_list[i], "api_key": api_key, "file_type": "json"}
         data_request = requests.get(bond_url, params=params_data)
